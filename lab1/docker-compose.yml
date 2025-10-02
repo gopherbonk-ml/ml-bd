@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16
+    platform: linux/arm64
+    container_name: lab-postgres
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: labdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  mongo:
+    image: mongo:7
+    platform: linux/arm64
+    container_name: lab-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+
+volumes:
+  pgdata:
+  mongodata:
