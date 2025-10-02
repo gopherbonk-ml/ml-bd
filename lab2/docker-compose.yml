@@ -1,0 +1,203 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    platform: linux/arm64/v8
+    container_name: lab-postgres
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: labdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+
+  rp1:
+    image: redpandadata/redpanda:v24.1.10
+    platform: linux/arm64/v8
+    container_name: lab-rp1
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "1"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://lab-rp1:9092
+      - --rpc-addr
+      - 0.0.0.0:33145
+      - --advertise-rpc-addr
+      - lab-rp1:33145
+    ports:
+      - "9092:9092"
+    restart: unless-stopped
+
+  rp2:
+    image: redpandadata/redpanda:v24.1.10
+    platform: linux/arm64/v8
+    container_name: lab-rp2
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "2"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://lab-rp2:9092
+      - --rpc-addr
+      - 0.0.0.0:33145
+      - --advertise-rpc-addr
+      - lab-rp2:33145
+      - --seeds
+      - lab-rp1:33145
+    restart: unless-stopped
+
+  rp3:
+    image: redpandadata/redpanda:v24.1.10
+    platform: linux/arm64/v8
+    container_name: lab-rp3
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "3"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://lab-rp3:9092
+      - --rpc-addr
+      - 0.0.0.0:33145
+      - --advertise-rpc-addr
+      - lab-rp3:33145
+      - --seeds
+      - lab-rp1:33145
+    restart: unless-stopped
+
+  redpanda-console:
+    image: redpandadata/console:v2.6.1
+    platform: linux/arm64/v8
+    container_name: lab-rp-console
+    environment:
+      KAFKA_BROKERS: lab-rp1:9092,lab-rp2:9092,lab-rp3:9092
+    ports:
+      - "8085:8080"
+    depends_on: [rp1, rp2, rp3]
+    restart: unless-stopped
+
+  kafka-setup:
+    image: redpandadata/redpanda:v24.1.10
+    platform: linux/arm64/v8
+    container_name: lab-kafka-setup
+    entrypoint: ["/bin/bash", "/setup/create_topic.sh"]
+    volumes:
+      - ./kafka-setup:/setup
+    depends_on: [rp1, rp2, rp3]
+    restart: "no"
+
+  webapi:
+    build:
+      context: ./webapi
+    platform: linux/arm64/v8
+    container_name: lab-webapi
+    environment:
+      DB_URI: postgresql+psycopg2://lab:lab@postgres:5432/labdb
+      OUTPUT_DIR: /shared/out
+    volumes:
+      - ./shared:/shared
+    ports:
+      - "8000:8000"
+    depends_on: [postgres]
+    restart: unless-stopped
+
+  spark:
+    image: spark:4.0.0-scala2.13-java21-python3-ubuntu
+    platform: linux/arm64/v8
+    container_name: lab-spark
+    environment:
+      SPARK_MODE: driver
+    command: ["bash","-lc","mkdir -p /opt/spark/work-dir && tail -f /dev/null"]
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+      - ./shared:/shared
+    depends_on: [rp1, rp2, rp3]
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  cassandra:
+    image: cassandra:4.1
+    platform: linux/arm64/v8
+    container_name: lab-cassandra
+    environment:
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassdata:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' 127.0.0.1 9042 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    restart: unless-stopped
+
+  cassandra-init:
+    image: cassandra:4.1
+    platform: linux/arm64/v8
+    container_name: lab-cassandra-init
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./cassandra-init:/init
+    entrypoint: ["/bin/bash","-lc","cqlsh cassandra -f /init/init.cql"]
+    restart: "no"
+
+  consumer:
+    build:
+      context: ./consumer
+    platform: linux/arm64/v8
+    container_name: lab-consumer
+    environment:
+      KAFKA_BROKERS: lab-rp1:9092,lab-rp2:9092,lab-rp3:9092
+      KAFKA_TOPIC: lab.events
+      CASSANDRA_HOST: cassandra
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+
+volumes:
+  pgdata:
+  cassdata:
